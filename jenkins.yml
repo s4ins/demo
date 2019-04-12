@@ -1,0 +1,133 @@
+---
+  - name: Install Jenkins
+    hosts: 127.0.0.1 
+    connection: local
+    gather_facts: false
+    become: true
+    tasks:
+      - name: Install wget and Java
+        apt:
+          name:
+            - wget
+            - openjdk-8-jdk
+            - openssl
+            - unzip
+            - python-pip
+            - php7.2-cli
+            - php7.2-sqlite3
+            - php7.2-mbstring
+            - php7.2-xml
+            - php7.2-intl
+            - composer
+            - openssh-server
+            - ruby-full
+            - capistrano  
+
+      - pip:
+          name:
+            - hvac
+            - jenkins
+
+      - gem:
+          name: capistrano
+
+      - gem:
+          name: capistrano-composer
+          #  - sshkit
+
+      - gem:
+          name: sshkit
+
+      - name: Restart ssh
+        service:
+          name: sshd
+          state: restarted
+
+      - name: Jenkins repo key
+        apt_key:
+          url: https://pkg.jenkins.io/debian-stable/jenkins.io.key
+          state: present
+
+      - name: Download jenkins.repo
+        apt_repository:
+          repo: deb https://pkg.jenkins.io/debian-stable binary/
+          state: present
+          update_cache: yes
+
+      - name: Install Jenkins from repo
+        apt:
+          name:
+            - jenkins
+
+      - name: Ensure directory exists for local self-signed TLS certs.
+        file:
+          path: /etc/certs
+          state: directory
+
+      - name: Generate an OpenSSL private key.
+        openssl_privatekey:
+          path: /etc/certs/privkey.pem
+#          cipher: rsa
+          state: present
+
+      - name: Generate an OpenSSL CSR.
+        openssl_csr:
+          path: /etc/certs/test.csr
+          privatekey_path: /etc/certs/privkey.pem
+          common_name: "test"
+
+      - name: Generate a Self Signed OpenSSL certificate.
+        openssl_certificate:
+          path: /etc/certs/fullchain.pem
+          privatekey_path: /etc/certs/privkey.pem
+          csr_path: /etc/certs/test.csr
+          provider: selfsigned
+
+      - name: convert to rsa
+        shell: openssl rsa -in /etc/certs/privkey.pem -out /etc/certs/privkey-rsa.pem
+
+      - file:
+         path: /etc/certs/privkey-rsa.pem
+         owner: root 
+         group: root
+         mode: 0644
+
+      - name: launch Jenkins
+        shell: /usr/bin/java -Djava.awt.headless=true -jar /usr/share/jenkins/jenkins.war --webroot=/var/cache/jenkins/war/ --httpPort=-1 --httpsPort=443 --httpsCertificate=/etc/certs/fullchain.pem --httpsPrivateKey=/etc/certs/privkey-rsa.pem 2>&1 >> /var/log/jenkins.log  &
+
+###it will be launched a little bit later
+
+      - wait_for: timeout=10
+
+      - name: Get init password Jenkins
+        shell: cat /root/.jenkins/secrets/initialAdminPassword || true
+        changed_when: false
+        register: result
+
+      - name: Print init password Jenkins
+        debug:
+          var: result.stdout
+
+### Launch HashiCorp Vault
+
+      - name: Unarchive Vault
+        unarchive:
+          src: https://releases.hashicorp.com/vault/1.1.0/vault_1.1.0_linux_amd64.zip
+          dest: /usr/local/bin
+          remote_src: yes
+
+      - name: Luanch vault in dev mode
+        shell: /usr/local/bin/vault server -dev -config=/vagrant/vault.config 2>&1 >> /vagrant/vault.log &
+
+      - name: Ensure directory exists for project
+        file:
+          path: /var/www/test_project
+          state: directory
+          owner: vagrant
+          group: vagrant
+
+      - name: move ssh keys
+        shell: cp /vagrant/id_rsa* /root/.ssh/
+
+      - name: Set authorized key taken from file
+        shell: cat /root/.ssh/id_rsa.pub >> /home/vagrant/.ssh/authorized_keys
